@@ -1,3 +1,3 @@
-# Factors-Affecting-Housing-Price-
+# Factors Affecting Housing Price
 
 This report analyzes factors affecting house sale price using Ames housing data since house price differs a lot. With linear regression, correlation analysis, LASSO and principal component analysis, features that affect house price most are analyzed. Using Multivariate Analysis of Variance (MANOVA), difference across neighborhoods on house price is tested. How houses tend to clustered is mentioned using cluster analysis. In the end, whether house price in a neighborhood is overpriced, underpriced or with fair price is discussed with prediction of linear regression and XGBoost. What I found is that both size and geographical location affect housing price a lot.
