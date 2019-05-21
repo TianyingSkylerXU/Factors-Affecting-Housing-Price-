@@ -1,0 +1,500 @@
+---
+title: "Factors Affecting Housing Price"
+author: "Tianying Xu"
+date: "2019/5/1"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(corrplot,factoextra,ggfortify,ggplot2,reshape2,glmnet,tidyverse,cluster,HDCI,gplots,xgboost,caret)
+```
+
+I. Data
+```{r}
+Train <- read.csv("train.csv",header=T)
+
+#remove feature with many NA
+Train_1 <- Train[,apply(Train,2,function(x){sum(is.na(x))<365})]
+#Alley, FirePlaceQu, PoolQC, Fence, MiscFeature
+
+#continuous numeric feature
+#fill NA in numeric feature with mean of the rest in that feature: LotFrontage
+num <- c("LotFrontage", "LotArea", "BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF", "X1stFlrSF", "X2ndFlrSF","LowQualFinSF", "GrLivArea", "GarageArea", "WoodDeckSF", "OpenPorchSF", "EnclosedPorch", "PoolArea")
+train_num <- Train_1[,num]
+train_numna <- as.data.frame(train_num[,apply(train_num,2,function(x){sum(is.na(x))>0})])
+names(train_numna) <- names(train_num)[apply(train_num,2,function(x){sum(is.na(x))>0})]
+Train_1$LotFrontage[is.na(Train_1$LotFrontage)] <- mean(Train_1$LotFrontage, na.rm = TRUE)
+
+#For other feature, remove NA
+Train_1 <- Train_1 %>% na.omit()
+```
+
+II. Q1&Q2: Regression Analysis & Correlation
+1. Regression Analysis
+```{r}
+# Data
+D <- Train_1 %>% 
+ select(LotFrontage, LotArea, BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF, X1stFlrSF, X2ndFlrSF,LowQualFinSF, GrLivArea, GarageArea, WoodDeckSF, OpenPorchSF, EnclosedPorch, PoolArea, 
+        SalePrice) 
+
+# Scale variables
+D1 <- as.data.frame(apply(D, 2, function(col) { scale(col) }))
+
+# first Regression
+LM1 <- lm(SalePrice~.,data=D1)
+summary(LM1)
+plot(LM1,c(1,2))
+
+#Remove Outlier
+D12 <- D1[-c(482,1082,1189),]
+LM12 <- lm(SalePrice~.,data=D12) 
+summary(LM12)
+plot(LM12,c(1,2))
+```
+
+
+From the summary of the regression analysis, we can see that the most important feature in explaining the SalePrice is the "2ndFlrSF", which is the second floor squre feet of each house. When "2ndFlrSF" increases with amount of its standard deviation, Sale price will increase 0.413 of its standard deviation.
+
+However, there are string correlation between some features, thus there are NA in the regression table. Also, the residual plot is not really great, there is linear trend that these variables can not capture, this the red line tends to go up as fitted value increases. The qq-plot shows that there are some tail issue in the resiudals, but overall, the residuals approximately follows normal distribution.
+
+
+2. Correlation
+```{r}
+# Correlation
+# Correlation between continuous features
+D2 <- D1[,-16]
+Cor <- round(cor(D2),2)
+print(Cor)
+
+Cor[lower.tri(Cor)]<- NA
+melted_cor <- melt(Cor,na.rm = T)
+
+ggplot(melted_cor, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", name="Pearson\nCorrelation") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1))+
+  coord_fixed()+
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+  theme(axis.title.x = element_blank(),axis.title.y = element_blank(),
+        panel.grid.major = element_blank(),panel.border = element_blank(),
+        panel.background = element_blank(),axis.ticks = element_blank(),
+        legend.justification = c(1, 0),legend.position = c(0.6, 0.7),
+        legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1, title.position = "top", title.hjust = 0.5))
+
+#highly correlated features
+PerformanceAnalytics::chart.Correlation(D1[, c("TotalBsmtSF","BsmtFinSF1",
+                                               "GrLivArea","X1stFlrSF","X2ndFlrSF","GarageArea")], 
+                                        histogram=TRUE, pch=10)
+
+# relationship between numeric feature
+sum(Train_1$GrLivArea==Train_1$X1stFlrSF + Train_1$X2ndFlrSF)/1338
+sum(Train_1$TotalBsmtSF==Train_1$BsmtFinSF1 + Train_1$BsmtFinSF2 + Train_1$BsmtUnfSF)/1338
+#"GrLivArea" should be the sum of "1stFlrSF" & "2ndFlrSF";
+#"TotalBsmtSF" should be sum of "BsmtFinSF1" & "BsmtFinSF2" & "BsmtUnfSF"
+#Remove "1stFlrSF", "2ndFlrSF", "BsmtFinSF1", "BsmtFinSF2" & "BsmtUnfSF"
+D2 <- D1 %>% 
+  select(-X1stFlrSF,-X2ndFlrSF,-BsmtFinSF1,-BsmtFinSF2,-BsmtUnfSF)
+```
+
+
+- From the correlation matrix and correlation plot, we can see that 
+"BsmtUnfSF","BsmtFinSF1","TotalBsmtSF"; 
+"2ndFlrSF","GrLivArea"; 
+"GrLivArea","GarageArea","TotalBsmtSF","1stFlrSF"; 
+"LotFrontage","1stFlrSF"; 
+"BsmtFinSF1","TotalBsmtSF","1stFlrSF"; 
+"GarageArea","TotalBsmtSF","1stFlrSF";
+"TotalBsmtSF","1stFlrSF"
+are variables that clustered together. (threshold: 0.5)
+- Morever, "GrLivArea" = "1stFlrSF" + "2ndFlrSF";"TotalBsmtSF" = "BsmtFinSF1" + "BsmtFinSF2" + "BsmtUnfSF"
+- Remove "1stFlrSF", "2ndFlrSF", "BsmtFinSF1", "BsmtFinSF2" & "BsmtUnfSF"
+
+
+3. Variables Selection
+```{r}
+LM2 <- lm(SalePrice~.,data=D2)
+summary(LM2)
+
+# Ridge/LASSO/Elastic Net
+y <- as.matrix(D1$SalePrice)
+fit.lasso <- glmnet(as.matrix(D2[,-11]), y, family="gaussian", alpha=1)
+fit.ridge <- glmnet(as.matrix(D2[,-11]), y, family="gaussian", alpha=0)
+fit.elnet <- glmnet(as.matrix(D2[,-11]), y, family="gaussian", alpha=.5)
+
+for (i in 0:10) {
+    assign(paste("fit", i, sep=""), cv.glmnet(as.matrix(D2[,-11]),y,type.measure="mse",
+                                              alpha=i/10,family="gaussian"))
+}
+
+par(mfrow=c(3,2))
+plot(fit.lasso, xvar="lambda")
+plot(fit10, main="LASSO")
+
+plot(fit.ridge, xvar="lambda")
+plot(fit0, main="Ridge")
+
+plot(fit.elnet, xvar="lambda")
+plot(fit5, main="Elastic Net")
+#LASSO, choose >=6 features
+
+#Lasso
+set.seed(0)
+obj <- Lasso(as.matrix(D2[,-11]), y, fix.lambda = FALSE)
+obj$lambda
+obj$beta
+D_f1 <- D2[,-11][,obj$beta!=0]
+
+
+# stepwise
+step <- step(LM2, trace = 1,direction="both",steps=1000)
+```
+- Same Result
+- keep: "TotalBsmtSF" + "LowQualFinSF" + "GrLivArea" + "GarageArea" + "WoodDeckSF" + "OpenPorchSF" + "EnclosedPorch" + "PoolArea"
+
+
+4. Principal Component Analysis
+```{r}
+# PCA
+D2.pca <- prcomp(cor(D2), center = TRUE)
+summary(D2.pca)
+
+#eda
+fviz_eig(D2.pca)
+autoplot(prcomp(cor(D2)), data = cor(D2),loadings = TRUE, loadings.colour = 'blue', loadings.label = TRUE, loadings.label.size = 3)
+```
+
+
+From the Principal Component Analysis, we can see that 6 principal components can explain 85% variance of all the variables and 8 principal components can explain 90% of the variance, thus I will choose these 6 principal components to represent continuous variables.
+
+
+#Final Linear Regression
+```{r}
+D13  <-  D12 %>% 
+  select(TotalBsmtSF, LowQualFinSF, GrLivArea, GarageArea, WoodDeckSF, OpenPorchSF, EnclosedPorch, PoolArea, SalePrice)
+LM_f <- lm(SalePrice~., data=D13)
+summary(LM_f)
+plot(LM_f,c(1,2))
+```
+
+
+
+III. Q3: Importance of Categorical Feature
+```{r}
+D31 <- as.data.frame(Train_1) %>% 
+ select(ExterQual,ExterCond, BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2,
+HeatingQC, CentralAir, KitchenQual, Functional,  GarageFinish,
+GarageQual,GarageCond, PavedDrive, MSSubClass, MSZoning, Condition1, Condition2, Street,
+Neighborhood, BldgType, HouseStyle, RoofStyle, RoofMatl, Exterior1st, Exterior2nd,
+MasVnrType, MasVnrArea, Foundation, Heating, Electrical, GarageType,
+MiscVal, SaleType, SaleCondition, Utilities) 
+  
+D31 <- D31[apply(D,1,function(x){!anyNA(x)}),]
+D31 <- D31[-c(482,1082,1189),]
+D331 <- D31[,apply(D31,2,function(x){length(unique(x))>1})]
+
+y <- residuals(LM12)
+
+name=names(D331)
+adj_R2=c()
+for(i in 1:37){
+  lm <- lm(y~D331[,i])
+  adj_R2[i] <- round(summary(lm)$adj.r.squared,2)
+}  
+Importance <- as.data.frame(cbind(name,adj_R2)) %>% 
+  arrange(desc(adj_R2))
+names(Importance)=c("name","importance")
+print(Importance)
+write.csv(Importance, "E:/BU/BU-learning/MSSP/2019Spring/MA584 Multivariate Statistical Analysis/final project/Importance.csv",row.names = F)
+```
+
+IV. Q4: House size and sale Price Different Across Neighborhoods?
+1. EDA
+```{r}
+# data
+D4 <- Train %>% 
+  select(LotArea,TotalBsmtSF,GrLivArea,SalePrice, Neighborhood)
+
+# eda
+ggplot(data=D4)+
+  geom_boxplot(mapping=aes(x=Neighborhood,y=LotArea),alpha=0.5,fill="skyblue")+
+  theme_minimal()+
+  ggtitle("LotArea")+
+  theme(axis.text.x=element_text(angle = 45),title = element_text(hjust = 0.5))
+  
+
+ggplot(data=D4)+
+  geom_boxplot(mapping=aes(x=Neighborhood,y=TotalBsmtSF),alpha=0.5,fill="blue")+
+  geom_boxplot(mapping=aes(x=Neighborhood,y=GrLivArea),alpha=0.5,fill="yellow")+
+  theme_minimal()+
+  ggtitle("'TotalBsmtSF' & 'GrLivArea'")+
+  theme(axis.text.x=element_text(angle = 45),title = element_text(hjust = 0.5))
+
+ggplot(data=D4)+
+  geom_boxplot(mapping=aes(x=Neighborhood,y=SalePrice),alpha=0.5,fill="red")+
+  theme_minimal()+
+  ggtitle("'Sale Price'")+
+  theme(axis.text.x=element_text(angle = 45),title = element_text(hjust = 0.5))
+
+```
+
+
+
+2. Test
+```{r}
+neighbor_ma <- manova(cbind(LotArea,TotalBsmtSF,X1stFlrSF,X2ndFlrSF,SalePrice)~ Neighborhood, data=Train_1)
+summary.aov(neighbor_ma)
+```
+
+
+P-values are all < 0.05, thus areas and prices throughout neighborhoods are significanlt different from each other.
+
+
+V.  Q5: Houses Clustering
+1. Data
+```{r}
+D5 <- Train_1 %>% 
+  select(LotFrontage, LotArea, BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF, X1stFlrSF, X2ndFlrSF,LowQualFinSF, GrLivArea, GarageArea, WoodDeckSF, OpenPorchSF, EnclosedPorch, PoolArea, OverallQual, OverallCond, YearBuilt, YearRemodAdd, BsmtFullBath, BsmtHalfBath, FullBath,
+HalfBath, BedroomAbvGr, KitchenAbvGr, TotRmsAbvGrd, Fireplaces, GarageYrBlt, GarageCars,
+MoSold, YrSold,
+MSZoning,MSSubClass,Neighborhood) %>% 
+  na.omit()
+D5 <- D5[,apply(D5,2,function(x){length(unique(x))>1})]
+D5[,-c(32,33,34)] <- as.data.frame(apply(D5[,-c(32,33,34)],2,function(x){scale(as.numeric(x))}))
+rownames(D5) <- c(paste("H",1:1338,sep=""))
+D5_x <- D5[,-c(32,33,34)]
+
+```
+
+2. Clustering
+```{r}
+dist <- dist(D5_x,method="euclidean")
+cluster1 <- hclust(dist,method="average")
+cut <- cutree(cluster1, k=10)
+table(cut)
+par(mar=c(0, 4, 4, 2)) 
+plot(cluster1, labels=FALSE)
+
+#Re-cluster
+D51 <- D5_x[cut==1,]
+D51 <- D51[,apply(D51,2,function(x){length(unique(x))>1})]
+dist <- dist(D51,method="euclidean")
+
+#ward.D2
+hr <- hclust(dist,method="ward.D2")
+# names(hr)
+# hr$labels[hr$order] 
+mycl <- cutree(hr, k=10)
+table(mycl)
+plot(hr,labels=FALSE)
+
+hc <-  hclust(dist(t(D51),method="euclidean"),method="ward.D2")
+mycol <- colorpanel(40, "darkblue", "yellow", "white")
+heatmap.2(as.matrix(D51), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), col=mycol,
+          scale="row", density.info="none", trace="none", 
+          RowSideColors=as.character(mycl))
+```
+
+3. ~Neighborhood/MSZoning/MSSubClass
+
+```{r}
+D55 <- D5[cut==1,]
+D55$cluster <- as.factor(as.matrix(mycl))
+N = table(mycl)
+D55_1 <- D55 %>% 
+  group_by(cluster,Neighborhood) %>% 
+  summarise(n=n()) 
+D55_2 <- D55 %>% 
+  group_by(cluster,MSZoning) %>% 
+  summarise(n=n()) 
+D55_3 <- D55 %>% 
+  group_by(cluster,MSSubClass) %>% 
+  summarise(n=n()) 
+
+
+ggplot(D55_1) + 
+  geom_bar(aes(y = n, x = cluster, fill = Neighborhood), stat="identity")+
+  theme_minimal()
+ggplot(D55_2) + 
+  geom_bar(aes(y = n, x = cluster, fill = MSZoning), stat="identity")+
+  theme_minimal()
+ggplot(D55_3) + 
+  geom_bar(aes(y = n, x = cluster, fill = as.factor(MSSubClass)), stat="identity")+
+  theme_minimal()
+
+```
+
+
+4. K-Means Clustering
+```{r}
+#determine K
+#fviz_nbclust(D51, kmeans, method = "gap_stat",k.max=10,iter.max=20)
+#8
+#elbow
+wss <- (nrow(D51)-1)*sum(apply(D51,2,var))
+  for (i in 2:15) wss[i] <- sum(kmeans(D51,centers=i)$withinss)
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+fit <- kmeans(D51, 8)
+fviz_cluster(fit, data = D51, frame.type = "convex")+
+  theme_minimal()
+fit <- kmeans(D51, 3)
+fviz_cluster(fit, data = D51, frame.type = "convex")+
+  theme_minimal()
+
+#~MSZoning
+fit <- kmeans(D51, 3)
+clusplot(D51,fit$cluster,color=T,shade=T,col.p = D5$MSZoning,col.txt=col.p)
+clusplot(D51,fit$cluster,color=T,shade=T,col.p = D5$MSSubClass,col.txt=col.p)
+clusplot(D51,fit$cluster,color=T,shade=T,col.p = D5$Neighborhood,col.txt=col.p)
+```
+
+```{r}
+clusteval::cluster_similarity()
+```
+
+
+VI. Over/Under Price
+```{r}
+LM_6 <- lm(SalePrice~., data=Train_1)
+summary(LM_6)
+plot(LM_6)
+q=quantile(abs(resid(LM_6)),0.5)
+
+TT <- Train_1
+TT$pre <- fitted(LM_6)
+
+TT <- TT %>% 
+  mutate(price=ifelse(SalePrice>pre+q,"overprice",
+               ifelse(SalePrice<pre-q,"underprice","fairprice"))) %>% 
+  group_by(Neighborhood,price) %>% 
+  summarise(n=n()) 
+
+N <- Train_1 %>% group_by(Neighborhood) %>% summarise(N=n())
+TT1 <- left_join(TT,N,"Neighborhood") %>% 
+  mutate(per=round(n/N,4)) %>% 
+  mutate(pos = cumsum(per) - (0.5 * per)) %>% 
+  arrange(Neighborhood,per) 
+  
+
+TT2 <- TT1 %>% 
+  filter(price=="fairprice") %>% 
+  arrange(per)
+TT1$Neighborhood <- factor(TT1$Neighborhood, levels = TT2$Neighborhood) 
+
+ggplot(TT1,aes(y = per, x = Neighborhood, fill = price,label = paste0(per*100,"%"))) + 
+  geom_bar(stat="identity",position="stack")+
+  geom_text(position = position_stack(vjust = 0.5)) +
+  coord_flip()+
+  theme_minimal()
+```
+
+
+
+
+```{r}
+#tune parameter
+cv_control = trainControl(method = "repeatedcv", number = 5L, repeats = 2L) 
+
+xgb_grid = expand.grid(
+  nrounds = c(100,150),
+  max_depth = c(20,25,30), 
+  eta = c(0.1,0.15),
+  gamma = 0,
+  colsample_bytree = 1.0,
+  subsample = 1.0,
+  min_child_weight = 10L)
+
+xgb_grid1 <- xgb_grid[1:5,]
+xgb_grid2 <- xgb_grid[6:10,]
+
+set.seed(1)
+
+# model = train(SalePrice ~ ., data = Train_1, 
+#                      method = "xgbTree",
+#                      metric = "rmse",
+#                      trControl = cv_control,
+#                      tuneGrid = xgb_grid1,
+#                      verbose = FALSE)
+# model$results
+# 
+# model1 = train(SalePrice ~ ., data = Train_1, 
+#                      method = "xgbTree",
+#                      metric = "rmse",
+#                      trControl = cv_control,
+#                      tuneGrid = xgb_grid2,
+#                      verbose = FALSE)
+# model1$results
+#eta=0.1, max_depth=30, nrounds=150, 
+
+set.seed(0)
+xgb <- xgboost(data = data.matrix(Train_1), 
+               label = Train_1$SalePrice, 
+               eta = 0.1,
+               max_depth = 30,
+               nround=150,
+               subsample = 0.5,
+               colsample_bytree = 0.5,
+               seed = 1,
+               eval_metric = "mae",
+               nthread = 3)
+#train-mae: 113.62
+```
+
+
+
+
+
+
+```{r}
+y_pred <- predict(xgb, data.matrix(Train_1))
+dd <- as.data.frame(Train_1$SalePrice)
+dd$nbr <- Train_1$Neighborhood
+dd$prediction <- y_pred
+names(dd) <- c("SalePrice","Neighborhood","prediction")
+
+res <- y_pred-Train_1$SalePrice
+q1 <- quantile(abs(res),0.5)
+
+# dd <- dd %>% 
+#   mutate(overprice=ifelse(actual>prediction,1,0)) %>% 
+#   group_by(NBR) %>% 
+#   summarise(n=n(),over=sum(overprice)) %>% 
+#   mutate(ifoverprice=ifelse(over>=n/2,1,0)) %>% 
+#   select(NBR, ifoverprice)
+
+
+dd <- dd %>% 
+  mutate(price=ifelse(SalePrice>prediction+q1,"overprice",
+               ifelse(SalePrice<prediction-q1,"underprice","fairprice"))) %>% 
+  group_by(Neighborhood,price) %>% 
+  summarise(n=n()) 
+
+dd1 <- left_join(dd,N,"Neighborhood") %>% 
+  mutate(per=round(n/N,4)) %>% 
+  arrange(Neighborhood,per) 
+  
+
+dd2 <- dd1 %>% 
+  filter(price=="fairprice") %>% 
+  arrange(per)
+dd1$Neighborhood <- factor(dd1$Neighborhood, levels = dd2$Neighborhood) 
+
+ggplot(dd1,aes(y = per, x = Neighborhood, fill = price,label = paste0(per*100,"%"))) + 
+  geom_bar(stat="identity",position="stack")+
+  geom_text(position = position_stack(vjust = 0.5)) +
+  coord_flip()+
+  theme_minimal()
+```
+
+
+
+
+
+
+
+
